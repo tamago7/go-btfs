@@ -20,16 +20,16 @@ import (
 	utilmain "github.com/TRON-US/go-btfs/cmd/btfs/util"
 	oldcmds "github.com/TRON-US/go-btfs/commands"
 	"github.com/TRON-US/go-btfs/core"
-	commands "github.com/TRON-US/go-btfs/core/commands"
+	"github.com/TRON-US/go-btfs/core/commands"
 	"github.com/TRON-US/go-btfs/core/commands/cmdenv"
 	"github.com/TRON-US/go-btfs/core/commands/storage/path"
 	"github.com/TRON-US/go-btfs/core/commands/storage/upload/helper"
-	corehttp "github.com/TRON-US/go-btfs/core/corehttp"
+	"github.com/TRON-US/go-btfs/core/corehttp"
 	httpremote "github.com/TRON-US/go-btfs/core/corehttp/remote"
-	corerepo "github.com/TRON-US/go-btfs/core/corerepo"
-	libp2p "github.com/TRON-US/go-btfs/core/node/libp2p"
+	"github.com/TRON-US/go-btfs/core/corerepo"
+	"github.com/TRON-US/go-btfs/core/node/libp2p"
 	nodeMount "github.com/TRON-US/go-btfs/fuse/node"
-	fsrepo "github.com/TRON-US/go-btfs/repo/fsrepo"
+	"github.com/TRON-US/go-btfs/repo/fsrepo"
 	migrate "github.com/TRON-US/go-btfs/repo/fsrepo/migrations"
 	"github.com/TRON-US/go-btfs/spin"
 
@@ -37,6 +37,7 @@ import (
 	config "github.com/TRON-US/go-btfs-config"
 	cserial "github.com/TRON-US/go-btfs-config/serialize"
 
+	"github.com/google/gops/agent"
 	multierror "github.com/hashicorp/go-multierror"
 	util "github.com/ipfs/go-ipfs-util"
 	mprome "github.com/ipfs/go-metrics-prometheus"
@@ -224,7 +225,14 @@ func defaultMux(path string) corehttp.ServeOption {
 }
 
 func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment) (_err error) {
-
+	go func() {
+		if err := agent.Listen(agent.Options{
+			Addr: "0.0.0.0:8848",
+			// ConfigDir:       "/home/centos/gopsconfig", // 最好使用默认
+			ShutdownCleanup: true}); err != nil {
+			log.Fatal(err)
+		}
+	}()
 	cctx := env.(*oldcmds.Context)
 	_, b := os.LookupEnv(path.BtfsPathKey)
 	if !b {
