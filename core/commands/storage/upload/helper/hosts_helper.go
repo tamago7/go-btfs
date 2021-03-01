@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +18,35 @@ import (
 	nodepb "github.com/tron-us/go-btfs-common/protos/node"
 
 	"github.com/libp2p/go-libp2p-core/peer"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+var renterLog = initLogger("renter.log").Sugar()
+
+// Log print initialization, get *zap.Logger Info.
+func initLogger(logPath string) *zap.Logger {
+	// lumberjack.Logger is already safe for concurrent use, so we don't need to
+	// lock it.
+	w := zapcore.AddSync(&lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    128, // megabytes
+		MaxBackups: 30,
+		MaxAge:     7, // days
+		Compress:   true,
+	})
+	encoderConfig := zap.NewProductionEncoderConfig()
+	// time format
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	core := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig),
+		zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout), w), // this line enables log outputs to multiple destinations: log file/stdout
+		zap.InfoLevel,
+	)
+	logger := zap.New(core, zap.AddStacktrace(zap.ErrorLevel))
+	return logger
+}
 
 const (
 	minimumHosts = 30
@@ -24,7 +54,7 @@ const (
 )
 
 type IHostsProvider interface {
-	NextValidHost(price int64) (string, error)
+	NextValidHost(sessionId string, price int64) (string, error)
 }
 
 type CustomizedHostsProvider struct {
@@ -34,7 +64,7 @@ type CustomizedHostsProvider struct {
 	sync.Mutex
 }
 
-func (p *CustomizedHostsProvider) NextValidHost(price int64) (string, error) {
+func (p *CustomizedHostsProvider) NextValidHost(sessionId string, price int64) (string, error) {
 	for true {
 		if index, err := p.AddIndex(); err == nil {
 			id, err := peer.IDB58Decode(p.hosts[index])
@@ -106,6 +136,11 @@ func (p *HostsProvider) init() (err error) {
 	if err != nil {
 		return err
 	}
+	var hs []string
+	for _, h := range p.hosts {
+		hs = append(hs, h.NodeId)
+	}
+	renterLog.Info("hosts:", strings.Join(hs, ","))
 	peers, err := p.cp.Api.Swarm().Peers(p.cp.Ctx)
 	if err != nil {
 		log.Debug(err)
@@ -205,7 +240,7 @@ func (p *HostsProvider) PickFromBackupHosts() (string, error) {
 	return "", errors.New("shouldn't reach here")
 }
 
-func (p *HostsProvider) NextValidHost(price int64) (string, error) {
+func (p *HostsProvider) NextValidHost(sessionId string, price int64) (string, error) {
 	endOfBackup := false
 LOOP:
 	for true {
@@ -236,7 +271,10 @@ LOOP:
 				p.hosts = append(p.hosts, host)
 				p.times++
 				p.Unlock()
+				renterLog.Info(sessionId, " attempt to connect to ", host.NodeId, " failed")
 				continue
+			} else {
+				renterLog.Info(sessionId, " attempt to connect to ", host.NodeId, " succeeded")
 			}
 			return host.NodeId, nil
 		} else if !endOfBackup {
