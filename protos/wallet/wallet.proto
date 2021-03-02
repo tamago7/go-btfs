@@ -49,6 +49,7 @@ message TransactionV1 {
     OFF_CHAIN = 2;
   }
   Type type = 7;
+  string info = 8;
 }
 
 message ChannelState {

@@ -155,14 +155,15 @@ func ConfirmDepositProcess(ctx context.Context, n *core.IpfsNode, prepareRespons
 		if confirmDepositResponse.GetResponse().GetCode() == exPb.Response_TRANSACTION_PENDING {
 			log.Debug(fmt.Sprintf("[Id:%d]TronTransaction is PENDING.", prepareResponse.GetId()))
 
-			err := UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusPending)
+			err := UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusPending, "")
 			if err != nil {
 				return err
 			}
 			continue
 		}
 		if confirmDepositResponse.GetResponse().GetCode() == exPb.Response_TRANSACTION_FAILED {
-			return UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusFailed)
+			return UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusFailed,
+				string(confirmDepositResponse.GetResponse().GetReturnMessage()))
 		}
 		if confirmDepositResponse.GetResponse().GetCode() == exPb.Response_SUCCESS {
 			signSuccessChannelState := confirmDepositResponse.GetSuccessChannelState()
@@ -194,7 +195,7 @@ func ConfirmDepositProcess(ctx context.Context, n *core.IpfsNode, prepareRespons
 				return err
 			}
 			log.Info(fmt.Sprintf("[Id:%d] Close SuccessChannelState succeed.", prepareResponse.GetId()))
-			err = UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusSuccess)
+			err = UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusSuccess, "")
 			if err != nil {
 				return err
 			}
@@ -289,14 +290,15 @@ func Withdraw(ctx context.Context, n *core.IpfsNode, ledgerAddr, externalAddr []
 	}
 
 	if withdrawResponse.Response.Code != exPb.Response_SUCCESS {
-		err := UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusFailed)
+		err := UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusFailed,
+			string(withdrawResponse.Response.ReturnMessage))
 		if err != nil {
 			return 0, 0, err
 		}
 		return 0, 0, errors.New(string(withdrawResponse.Response.ReturnMessage))
 	}
 	log.Debug("Withdraw end!")
-	err = UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusSuccess)
+	err = UpdateStatus(n.Repo.Datastore(), n.Identity.Pretty(), txId, StatusSuccess, "")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -446,7 +448,7 @@ func PersistTxWithTime(d ds.Datastore, peerId string, txId string, amount int64,
 		})
 }
 
-func UpdateStatus(d ds.Datastore, peerId string, txId string, status string) error {
+func UpdateStatus(d ds.Datastore, peerId string, txId string, status string, info string) error {
 	key := fmt.Sprintf(walletTransactionV1Key, peerId, txId)
 	s := &walletpb.TransactionV1{}
 	err := sessions.Get(d, key, s)
@@ -455,6 +457,9 @@ func UpdateStatus(d ds.Datastore, peerId string, txId string, status string) err
 	}
 	if s.Status != status {
 		s.Status = status
+		if s.Info == "" {
+			s.Info = info
+		}
 		return sessions.Save(d, key, s)
 	}
 	return nil
@@ -607,7 +612,7 @@ func updateV0Txs(ctx context.Context, d ds.Datastore, cfg *config.Config, peerId
 		if status == StatusPending {
 			continue
 		}
-		err = UpdateStatus(d, peerId, txId, status)
+		err = UpdateStatus(d, peerId, txId, status, "")
 		if err != nil {
 			errorCount++
 			continue
@@ -642,20 +647,21 @@ func updateV1Txs(ctx context.Context, d ds.Datastore, cfg *config.Config, peerId
 				continue
 			}
 			if status != StatusPending && status != exPb.Response_TRANSACTION_PENDING.String() {
-				err := UpdateStatus(d, peerId, tx.Id, status)
+				err := UpdateStatus(d, peerId, tx.Id, status, "")
 				if err != nil {
 					errorCount++
 					continue
 				}
 			}
 		case walletpb.TransactionV1_ON_CHAIN:
-			status, err := getOnChainTxStatus(ctx, d, cfg, peerId, tx.Id)
+			status, info, err := getOnChainTxStatus(ctx, d, cfg, peerId, tx.Id)
+			_ = info
 			if err != nil {
 				errorCount++
 				continue
 			}
 			if status != StatusPending {
-				err := UpdateStatus(d, peerId, tx.Id, status)
+				err := UpdateStatus(d, peerId, tx.Id, status, "")
 				if err != nil {
 					errorCount++
 					continue
@@ -699,8 +705,9 @@ func getExchangeTxStatus(ctx context.Context, cfg *config.Config, txIdStr string
 	return status, err
 }
 
-func getOnChainTxStatus(ctx context.Context, d ds.Datastore, cfg *config.Config, peerId string, txId string) (string, error) {
+func getOnChainTxStatus(ctx context.Context, d ds.Datastore, cfg *config.Config, peerId string, txId string) (string, string, error) {
 	status := StatusPending
+	info := ""
 	err := grpc.WalletClient(cfg.Services.FullnodeDomain).WithContext(ctx, func(ctx context.Context, client tronPb.WalletClient) error {
 		bytes, err := hex.DecodeString(txId)
 		if err != nil {
@@ -714,15 +721,17 @@ func getOnChainTxStatus(ctx context.Context, d ds.Datastore, cfg *config.Config,
 			return err
 		}
 		status = resp.Result.String()
+		info = string(resp.ResMessage)
+		fmt.Println("info", info)
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if status == corePb.TransactionInfo_SUCESS.String() {
 		status = StatusSuccess
 	} else if status == corePb.TransactionInfo_FAILED.String() {
 		status = StatusFailed
 	}
-	return status, nil
+	return status, info, nil
 }
